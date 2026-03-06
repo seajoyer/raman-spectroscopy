@@ -1,0 +1,42 @@
+[project]
+name = "raman-spectroscopy"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "catboost>=1.2.8",
+    "feature-engine>=1.9.3",
+    "ipywidgets>=8.1.8",
+    "jupyterlab>=4.5.3",
+    "jupyterlab-vim>=4.1.4",
+    "matplotlib>=3.10.8",
+    "nbstripout>=0.9.0",
+    "numpy>=2.4.2",
+    "optbinning>=0.21.0",
+    "pandas>=3.0.0",
+    "scikit-learn==1.6.0",
+    "seaborn>=0.13.2",
+    "shap>=0.50.0",
+    "xgboost>=3.1.3",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+    "ty>=0.0.14",
+]
+
+[tool.ruff]
+include = ["pyproject.toml", "src/**/*.py", "notebooks/**/*.ipynb"]
+line-length = 120
+
+exclude = [
+    "data/",
+    "models/",
+]
+
+lint.select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.ty.src]
+include = ["src", "notebooks"]
