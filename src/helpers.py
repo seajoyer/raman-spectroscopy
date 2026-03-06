@@ -17,7 +17,6 @@ def load_single_map(file_path: str) -> pd.DataFrame:
     df.columns = [col.strip('# ').strip() for col in df.columns]
     return df
 
-
 def plot_raman_spectra(
     df: Optional[pd.DataFrame] = None,
     file_path: Optional[str] = None,
@@ -29,132 +28,132 @@ def plot_raman_spectra(
     points: Optional[List[Tuple[int, int]]] = None,
     normalize: bool = True,
     alpha: Optional[float] = None,
-    figsize: Tuple[int, int] = (14, 8),
+    figsize: Tuple[float, float] = (10, 6),
     title: Optional[str] = None,
     plot_average: bool = False,
     wave_range: Optional[Tuple[float, float]] = None,
-) -> None:
+    
+    # ── Новые параметры для рисования на существующей оси ──
+    ax: Optional[plt.Axes] = None,
+    label_prefix: str = "",           # будет добавлено к легенде, напр. "endo 2a place1 "
+    color: Optional[str] = None,      # фиксированный цвет для всех линий этого вызова
+    return_ax: bool = False,          # удобно для chaining
+) -> Optional[plt.Axes]:
     """
-    Универсальная функция для построения графиков Рамановских спектров.
+    Если передан ax — рисует на него, не создавая новую фигуру.
+    Если ax is None — создаёт новую фигуру и ось.
+    """
+    create_fig = ax is None
 
-    Параметры:
-        df — большой DataFrame со всеми спектрами (126M строк)
-        file_path — путь к одному .txt файлу (альтернатива df)
-        label, group, center, brain, place — фильтры для df (place обязателен для одной карты!)
-        points — список точек карты [(col, row), ...], где col=1..35, row=1..15 (1-based)
-                Если None и plot_average=False — строятся ВСЕ спектры карты (с прозрачностью)
-        normalize — нормализация каждого спектра по максимуму
-        plot_average — если True + points=None: строится средний спектр + std
-        wave_range — ограничение диапазона волновых чисел, например (600, 1800)
-    """
-    # ======================== 1. Загрузка данных ========================
+    if create_fig:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    # ── 1. Загрузка / фильтрация данных (без изменений) ──
     if file_path is not None:
-        map_df = load_single_map(file_path)
+        map_df = pd.read_csv(file_path, sep='\t')
+        map_df.columns = [col.strip('# ').strip() for col in map_df.columns]
         source_name = Path(file_path).name
     elif df is not None:
         conditions = []
-        if label is not None: conditions.append(f"label == '{label}'")
-        if group is not None: conditions.append(f"group == '{group}'")
-        if center is not None: conditions.append(f"center == '{center}'")
-        if brain is not None: conditions.append(f"brain == '{brain}'")
-        if place is not None: conditions.append(f"place == '{place}'")
+        if label:   conditions.append(f"label == '{label}'")
+        if group:   conditions.append(f"group == '{group}'")
+        if center:  conditions.append(f"center == '{center}'")
+        if brain:   conditions.append(f"brain == '{brain}'")
+        if place:   conditions.append(f"place == '{place}'")
 
-        map_df = df.copy()
-        if conditions:
-            map_df = map_df.query(" and ".join(conditions))
-        source_name = f"{label} | {group} | {brain} | place={place} | center={center}"
+        map_df = df.query(" and ".join(conditions)) if conditions else df.copy()
+        source_name = f"{label} {group} {brain} place={place} center={center}"
     else:
-        raise ValueError("Укажите либо file_path, либо df + параметры фильтрации")
+        raise ValueError("Укажите df + фильтры или file_path")
 
     if len(map_df) == 0:
-        raise ValueError("Нет данных по заданным параметрам")
+        print(f"Нет данных: {source_name}")
+        if return_ax and create_fig:
+            return ax
+        return None
 
-    # ======================== 2. Координатная сетка карты ========================
-    # Точки рассчитываются ДИНАМИЧЕСКИ внутри функции (как и требовалось)
+    # ── 2. Координаты карты ──
     x_coords = sorted(map_df['X'].unique())
     y_coords = sorted(map_df['Y'].unique())
 
-    print(f"✅ Загружена карта {len(x_coords)} × {len(y_coords)} точек")
-
-    # ======================== 3. Специальный режим «средний спектр» ========================
+    # ── 3. Режим среднего спектра ──
     if plot_average and points is None:
         grouped = map_df.groupby('Wave')['Intensity'].agg(['mean', 'std']).reset_index()
-
         x = grouped['Wave'].values
         y_mean = grouped['mean'].values
         y_std = grouped['std'].values
 
         if normalize:
-            max_val = y_mean.max()
-            y_mean = y_mean / max_val
-            y_std = y_std / max_val
+            m = y_mean.max()
+            y_mean /= m
+            y_std /= m
 
         if wave_range:
             mask = (x >= wave_range[0]) & (x <= wave_range[1])
             x, y_mean, y_std = x[mask], y_mean[mask], y_std[mask]
 
-        plt.figure(figsize=figsize)
-        plt.plot(x, y_mean, 'b-', linewidth=2.5, label='Средний спектр')
-        plt.fill_between(x, y_mean - y_std, y_mean + y_std, alpha=0.35, color='blue')
-        plt.title(title or f'Средний Рамановский спектр — {source_name}')
-        plt.xlabel('Волновое число, см⁻¹')
-        plt.ylabel('Нормализованная интенсивность' if normalize else 'Интенсивность')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
-        return
+        ax.plot(x, y_mean, color=color or 'darkblue', lw=2.4, label=f"{label_prefix}mean")
+        ax.fill_between(x, y_mean - y_std, y_mean + y_std, color=color or 'blue', alpha=0.25)
+        
+        if create_fig:
+            ax.set_title(title or f"Mean spectrum — {source_name}")
+            ax.set_xlabel(r'Wave number, $cm^{-1}$')
+            ax.set_ylabel('Norm. Intensity' if normalize else 'Intensity')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            plt.tight_layout()
+        if return_ax:
+            return ax
+        return None
 
-    # ======================== 4. Выбор точек ========================
+    # ── 4. Выбор точек ──
     if points is None:
-        # Все спектры карты
-        points = [(i + 1, j + 1) for i in range(len(x_coords)) for j in range(len(y_coords))]
-        alpha = alpha or 0.06
+        points = [(i+1, j+1) for i in range(len(x_coords)) for j in range(len(y_coords))]
+        alpha = alpha or 0.07
     else:
-        alpha = alpha or 0.85
+        alpha = alpha or 0.75
 
-    # ======================== 5. Построение графиков ========================
-    plt.figure(figsize=figsize)
+    # ── 5. Отрисовка спектров ──
     plotted = 0
-
     for col, row in points:
         if not (1 <= col <= len(x_coords) and 1 <= row <= len(y_coords)):
-            print(f"⚠️ Точка ({col}, {row}) вне диапазона карты")
             continue
 
-        target_x = x_coords[col - 1]
-        target_y = y_coords[row - 1]
+        tx = x_coords[col-1]
+        ty = y_coords[row-1]
 
-        spectrum = map_df[(map_df['X'] == target_x) & (map_df['Y'] == target_y)].copy()
+        spectrum = map_df[(map_df['X'] == tx) & (map_df['Y'] == ty)]
         if len(spectrum) == 0:
             continue
 
         spectrum = spectrum.sort_values('Wave')
-
         wave = spectrum['Wave'].values
-        intensity = spectrum['Intensity'].values
+        intens = spectrum['Intensity'].values
 
         if wave_range:
-            mask = (wave >= wave_range[0]) & (wave <= wave_range[1])
-            wave = wave[mask]
-            intensity = intensity[mask]
+            m = (wave >= wave_range[0]) & (wave <= wave_range[1])
+            wave = wave[m]
+            intens = intens[m]
 
-        if normalize and len(intensity) > 0:
-            intensity = intensity / intensity.max()
+        if normalize and len(intens) > 0:
+            intens = intens / intens.max()
 
-        plt.plot(wave, intensity, alpha=alpha, linewidth=1.1, label=f'({col},{row})')
+        leg_label = f"{label_prefix}({col},{row})"
+        ax.plot(wave, intens, alpha=alpha, lw=1.1, label=leg_label if plotted < 15 else None, color=color)
         plotted += 1
 
-    plt.xlabel('Волновое число, см⁻¹')
-    plt.ylabel('Нормализованная интенсивность' if normalize else 'Интенсивность')
-    plt.title(title or f'Рамановские спектры — {source_name}')
-    plt.grid(True, alpha=0.3)
+    # ── Оформление только при создании новой фигуры ──
+    if create_fig:
+        ax.set_xlabel(r'Wave number, $cm^{-1}$')
+        ax.set_ylabel('Norm. Intensity' if normalize else 'Intensity')
+        ax.set_title(title or f"Raman spectra — {source_name}")
+        ax.grid(True, alpha=0.3)
+        if plotted > 0:
+            ax.legend(loc='upper left')
+        plt.tight_layout()
 
-    if plotted <= 12:
-        plt.legend(fontsize=9, bbox_to_anchor=(1.05, 1), loc='upper left')
-
-    plt.tight_layout()
-    plt.show()
+    if return_ax:
+        return ax
 
 def create_metadata_dataframe(root_dir='../data'):
     """
