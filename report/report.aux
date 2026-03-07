@@ -1,0 +1,60 @@
+\relax 
+\providecommand \babel@aux [2]{\global \let \babel@toc \@gobbletwo }
+\@nameuse{bbl@beforestart}
+\catcode `"\active 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\babel@aux{russian}{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Постановка задачи}{2}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Формальная постановка}{2}{subsection.1.1}\protected@file@percent }
+\newlabel{eq:f1macro}{{1}{2}{Формальная постановка}{equation.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Данные}{2}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Методология}{3}{section.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Общая архитектура пайплайна обработки и классификации.}}{3}{figure.caption.2}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:pipeline}{{1}{3}{Общая архитектура пайплайна обработки и классификации}{figure.caption.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Предобработка спектров}{3}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Усреднение и построение общей сетки.}{3}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Коррекция флуоресцентного фона.}{3}{section*.4}\protected@file@percent }
+\newlabel{eq:als}{{2}{3}{Коррекция флуоресцентного фона}{equation.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Сглаживание.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Стандартное нормальное варьирование (SNV).}{3}{section*.6}\protected@file@percent }
+\newlabel{eq:snv}{{3}{4}{Стандартное нормальное варьирование (SNV)}{equation.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Последовательные шаги предобработки типичного спектра. Сверху вниз: исходный сигнал с базовой линией ALS, спектр после коррекции, после сглаживания SG, после SNV-нормализации.}}{4}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:preproc}{{2}{4}{Последовательные шаги предобработки типичного спектра. Сверху вниз: исходный сигнал с базовой линией ALS, спектр после коррекции, после сглаживания SG, после SNV-нормализации}{figure.caption.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Извлечение признаков}{4}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Признаки биохимических полос.}{4}{section*.8}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Биохимически значимые рамановские полосы.}}{5}{table.caption.9}\protected@file@percent }
+\newlabel{tab:bands}{{1}{5}{Биохимически значимые рамановские полосы}{table.caption.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Производные признаки.}{5}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Вейвлет-признаки.}{5}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Зональные статистики.}{5}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Снижение размерности (PCA и NMF).}{5}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Отбор признаков.}{6}{section*.14}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Топ-30 признаков по gain-важности LightGBM для диапазонов 1500~см$^{-1}$ (слева) и 2900~см$^{-1}$ (справа).}}{6}{figure.caption.15}\protected@file@percent }
+\newlabel{fig:importance}{{3}{6}{Топ-30 признаков по gain-важности LightGBM для диапазонов 1500~см$^{-1}$ (слева) и 2900~см$^{-1}$ (справа)}{figure.caption.15}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Стратегия валидации: Leave-One-Animal-Out}{6}{subsection.2.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Структура LOAO-фолдов.}}{6}{table.caption.16}\protected@file@percent }
+\newlabel{tab:loao}{{2}{6}{Структура LOAO-фолдов}{table.caption.16}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Базовые модели и подбор гиперпараметров}{6}{subsection.2.4}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Macro F1 (LOAO-OOF) для каждой из 21 базовой модели, сгруппированных по диапазону.}}{7}{figure.caption.17}\protected@file@percent }
+\newlabel{fig:base_models}{{4}{7}{Macro F1 (LOAO-OOF) для каждой из 21 базовой модели, сгруппированных по диапазону}{figure.caption.17}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Ансамблирование: стекинг с оптимизацией порогов}{7}{subsection.2.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Сравнение стратегий ансамблирования (LOAO-OOF).}}{8}{table.caption.18}\protected@file@percent }
+\newlabel{tab:ensemble}{{3}{8}{Сравнение стратегий ансамблирования (LOAO-OOF)}{table.caption.18}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Результаты}{8}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Итоговые метрики классификации}{8}{subsection.3.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Отчёт классификации (LOAO-OOF, Best+Threshold).}}{8}{table.caption.19}\protected@file@percent }
+\newlabel{tab:clf_report}{{4}{8}{Отчёт классификации (LOAO-OOF, Best+Threshold)}{table.caption.19}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Матрицы ошибок LOAO-OOF для пяти стратегий ансамблирования. Слева направо: Soft Voting, Geometric Mean, Rank Averaging, Stacking, Best+Threshold.}}{8}{figure.caption.20}\protected@file@percent }
+\newlabel{fig:cm}{{5}{8}{Матрицы ошибок LOAO-OOF для пяти стратегий ансамблирования. Слева направо: Soft Voting, Geometric Mean, Rank Averaging, Stacking, Best+Threshold}{figure.caption.20}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Анализ значимости признаков}{9}{subsection.3.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Средние SNV-спектры трёх классов. Вертикальными пунктирными линиями отмечены биохимически значимые полосы с наибольшим вкладом в модель.}}{9}{figure.caption.21}\protected@file@percent }
+\newlabel{fig:mean_spectra}{{6}{9}{Средние SNV-спектры трёх классов. Вертикальными пунктирными линиями отмечены биохимически значимые полосы с наибольшим вкладом в модель}{figure.caption.21}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Пространство признаков: визуализация PCA}{10}{subsection.3.3}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Проекция спектральных карт на плоскость первых двух главных компонент (PCA, SNV-спектры). Слева: диапазон 1500~см$^{-1}$; справа: 2900~см$^{-1}$.}}{10}{figure.caption.22}\protected@file@percent }
+\newlabel{fig:pca_scatter}{{7}{10}{Проекция спектральных карт на плоскость первых двух главных компонент (PCA, SNV-спектры). Слева: диапазон 1500~см$^{-1}$; справа: 2900~см$^{-1}$}{figure.caption.22}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Обсуждение}{10}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Заключение}{10}{section.5}\protected@file@percent }
+\gdef \@abspage@last{12}
