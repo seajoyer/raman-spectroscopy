@@ -42,12 +42,9 @@
     "eq:als"
     "eq:snv"
     "tab:bands"
-    "fig:importance"
     "tab:loao"
-    "fig:base_models"
     "tab:ensemble"
     "tab:clf_report"
-    "fig:cm"
     "fig:mean_spectra"
     "fig:pca_scatter"))
  :latex)

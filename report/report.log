@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org) (preloaded format=pdflatex 1980.1.1)  7 MAR 2026 20:57
+This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org) (preloaded format=pdflatex 1980.1.1)  7 MAR 2026 20:59
 entering extended mode
  restricted \write18 enabled.
  file:line:error style messages enabled.
@@ -935,13 +935,26 @@ input line 197.
 
 [4 <../notebooks/plots/1500_baseline_overlay.png>]
 
-[5]
+LaTeX Warning: Reference `fig:importance' on page 5 undefined on input line 277
+.
 
-[6]
-Overfull \hbox (1.5752pt too wide) in paragraph at lines 332--335
+
+
+[5]
+Overfull \hbox (1.5752pt too wide) in paragraph at lines 321--324
 []\T2A/cmr/m/n/12 (-20) √иперпараметры под-би-ра-лись ме-то-дом бай-е-сов-ской 
 оп-ти-ми-за-ции (биб-лио-те-ка Optuna,
  []
+
+
+LaTeX Warning: Reference `fig:base_models' on page 6 undefined on input line 33
+0.
+
+
+
+[6]
+
+LaTeX Warning: Reference `fig:cm' on page 7 undefined on input line 410.
 
 
 
@@ -951,9 +964,7 @@ Overfull \hbox (1.5752pt too wide) in paragraph at lines 332--335
 
 [9]
 
-[10]
-
-[11] (./report.aux)
+[10] (./report.aux)
  ***********
 LaTeX2e <2025-06-01> patch level 1
 L3 programming layer <2025-06-09>
@@ -966,13 +977,13 @@ Package rerunfilecheck Info: File `report.out' has not changed.
 (rerunfilecheck)             Checksum: 8FA6883DCD9608B062925E695696E123;3521.
  ) 
 Here is how much of TeX's memory you used:
- 17052 strings out of 467890
- 277853 string characters out of 5410143
- 721964 words of memory out of 5000000
+ 17046 strings out of 467890
+ 277775 string characters out of 5410143
+ 723382 words of memory out of 5000000
  45179 multiletter control sequences out of 15000+600000
- 646804 words of font info for 148 fonts, out of 8000000 for 9000
+ 646734 words of font info for 147 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,10n,79p,1003b,608s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,10n,79p,1003b,612s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </nix/store/9dj928q9970ri0n3b12q0p7yrr33kjvi-texlive-2025-env-texmfdist/fonts
 /type1/public/amsfonts/cm/cmbx12.pfb></nix/store/9dj928q9970ri0n3b12q0p7yrr33kj
 vi-texlive-2025-env-texmfdist/fonts/type1/public/amsfonts/cm/cmbx8.pfb></nix/st
@@ -1001,10 +1012,10 @@ b></nix/store/9dj928q9970ri0n3b12q0p7yrr33kjvi-texlive-2025-env-texmfdist/fonts
 i-texlive-2025-env-texmfdist/fonts/type1/public/cm-super/sfti1200.pfb></nix/sto
 re/9dj928q9970ri0n3b12q0p7yrr33kjvi-texlive-2025-env-texmfdist/fonts/type1/publ
 ic/cm-super/sftt1200.pfb>
-Output written on report.pdf (12 pages, 642604 bytes).
+Output written on report.pdf (11 pages, 639169 bytes).
 PDF statistics:
- 294 PDF objects out of 1000 (max. 8388607)
- 236 compressed objects within 3 object streams
- 61 named destinations out of 1000 (max. 500000)
+ 283 PDF objects out of 1000 (max. 8388607)
+ 226 compressed objects within 3 object streams
+ 57 named destinations out of 1000 (max. 500000)
  35454 words of extra memory for PDF output out of 35830 (max. 10000000)
 
