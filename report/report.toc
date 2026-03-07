@@ -21,6 +21,6 @@
 \contentsline {section}{\numberline {3}Результаты}{7}{section.3}%
 \contentsline {subsection}{\numberline {3.1}Итоговые метрики классификации}{7}{subsection.3.1}%
 \contentsline {subsection}{\numberline {3.2}Анализ значимости признаков}{7}{subsection.3.2}%
-\contentsline {subsection}{\numberline {3.3}Пространство признаков: визуализация PCA}{9}{subsection.3.3}%
-\contentsline {section}{\numberline {4}Обсуждение}{9}{section.4}%
-\contentsline {section}{\numberline {5}Заключение}{9}{section.5}%
+\contentsline {subsection}{\numberline {3.3}Пространство признаков: визуализация PCA}{8}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Обсуждение}{8}{section.4}%
+\contentsline {section}{\numberline {5}Заключение}{8}{section.5}%

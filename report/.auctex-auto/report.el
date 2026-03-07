@@ -44,8 +44,6 @@
     "tab:bands"
     "tab:loao"
     "tab:ensemble"
-    "tab:clf_report"
-    "fig:mean_spectra"
-    "fig:pca_scatter"))
+    "tab:clf_report"))
  :latex)
 
