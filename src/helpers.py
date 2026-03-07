@@ -10,16 +10,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import List, Tuple, Optional
 
+
 def load_single_map(file_path: str) -> pd.DataFrame:
     """Загружает один файл .txt со спектральной картой Raman."""
     df = pd.read_csv(file_path, sep='\t')
     # Убираем символы # из заголовков
     df.columns = [col.strip('# ').strip() for col in df.columns]
     return df
-
-import matplotlib.pyplot as plt
-import pandas as pd
-from typing import Optional, Tuple, List
 
 
 def plot_avg_raman_spectra(

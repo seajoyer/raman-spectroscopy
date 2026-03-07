@@ -5,11 +5,6 @@ FILES_PATH  = [
     "striatum_left_exo_2Bgroup_633nm_center2900_obj100_power100_1s_5acc_map35x15_step2_place1_3.txt"
 ]
 
-
-
-
-
-
 import pandas as pd
 from scipy.signal import find_peaks
 from utils.normalize import smooth
