@@ -17,11 +17,125 @@ def load_single_map(file_path: str) -> pd.DataFrame:
     df.columns = [col.strip('# ').strip() for col in df.columns]
     return df
 
+import matplotlib.pyplot as plt
+import pandas as pd
+from typing import Optional, Tuple, List
+
+
+def plot_avg_raman_spectra(
+    avg_df: pd.DataFrame,                     # ожидается avg_spectra или его отфильтрованная копия
+    map_ids: Optional[List[str]] = None,      # конкретные map_id для отрисовки, например ['2b_1500_striatum_right_2_4']
+    labels: Optional[List[str]] = None,       # фильтр по меткам, напр. ['control', 'endo']
+    highlight_label: Optional[str] = None,    # какой класс выделить цветом/толщиной
+    normalize: bool = True,
+    wave_range: Optional[Tuple[float, float]] = None,
+    figsize: Tuple[float, float] = (10, 6),
+    title: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+    return_ax: bool = False,
+    alpha: float = 0.75,
+    lw_mean: float = 2.2,
+) -> Optional[plt.Axes]:
+    """
+    Отрисовка усреднённых Рамановских спектров из avg_spectra
+    
+    Примеры вызова:
+        plot_avg_raman_spectra(avg_spectra, labels=['control', 'endo', 'exo'])
+        plot_avg_raman_spectra(avg_spectra, map_ids=['2a_1500_...'], highlight_label='endo')
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = None
+
+    # Фильтрация данных
+    df_plot = avg_df.copy()
+    
+    if map_ids is not None:
+        df_plot = df_plot[df_plot['map_id'].isin(map_ids)]
+    if labels is not None:
+        df_plot = df_plot[df_plot['label'].isin(labels)]
+    
+    if len(df_plot) == 0:
+        print("Нет данных после фильтрации")
+        if return_ax:
+            return ax
+        return None
+
+    # Группируем по label для красивой легенды и возможного выделения
+    for label, group in df_plot.groupby('label', sort=False):
+        # Сортируем по волновому числу (на всякий случай)
+        group = group.sort_values('Wave_rounded')
+        
+        x = group['Wave_rounded'].values
+        y = group['Intensity'].values
+        
+        if wave_range:
+            mask = (x >= wave_range[0]) & (x <= wave_range[1])
+            x = x[mask]
+            y = y[mask]
+        
+        if len(x) == 0:
+            continue
+            
+        if normalize:
+            y = y / y.max() if y.max() > 0 else y
+        
+        # Стиль линии
+        is_highlight = highlight_label is not None and label == highlight_label
+        color = None
+        linewidth = lw_mean if is_highlight else lw_mean * 0.85
+        alpha_line = 1.0 if is_highlight else alpha
+        
+        if label == 'control':
+            color = '#2ca02c'    # зелёный
+        elif label == 'endo':
+            color = '#d62728'    # красный
+        elif label == 'exo':
+            color = '#1f77b4'    # синий
+        
+        label_text = f"{label} (n={len(group['map_id'].unique())})"
+        if is_highlight:
+            label_text += " ★"
+        
+        ax.plot(
+            x, y,
+            label=label_text,
+            color=color,
+            lw=linewidth,
+            alpha=alpha_line,
+            solid_capstyle='round'
+        )
+
+    # Оформление
+    ax.set_xlabel('Волновое число, cm⁻¹')
+    ax.set_ylabel('Нормированная интенсивность' if normalize else 'Интенсивность')
+    
+    if title:
+        ax.set_title(title)
+    elif highlight_label:
+        ax.set_title(f"Сравнение усреднённых спектров • выделен класс {highlight_label}")
+    else:
+        ax.set_title("Усреднённые Рамановские спектры по картам")
+
+    ax.grid(True, alpha=0.25, linestyle='--')
+    ax.legend(loc='upper right', framealpha=0.92, fontsize=9.5)
+    
+    if fig is not None:
+        plt.tight_layout()
+    
+    if return_ax:
+        return ax
+    
+    if fig is not None:
+        plt.show()
+    return None
+
 def plot_raman_spectra(
     df: Optional[pd.DataFrame] = None,
     file_path: Optional[str] = None,
     label: Optional[str] = None,
-    group: Optional[str] = None,
+    animal: Optional[str] = None,
     center: Optional[str] = None,
     brain: Optional[str] = None,
     place: Optional[str] = None,
@@ -56,13 +170,13 @@ def plot_raman_spectra(
     elif df is not None:
         conditions = []
         if label:   conditions.append(f"label == '{label}'")
-        if group:   conditions.append(f"group == '{group}'")
+        if animal:   conditions.append(f"animal == '{animal}'")
         if center:  conditions.append(f"center == '{center}'")
         if brain:   conditions.append(f"brain == '{brain}'")
         if place:   conditions.append(f"place == '{place}'")
 
         map_df = df.query(" and ".join(conditions)) if conditions else df.copy()
-        source_name = f"{label} {group} {brain} place={place} center={center}"
+        source_name = f"{label} {animal} {brain} place={place} center={center}"
     else:
         raise ValueError("Укажите df + фильтры или file_path")
 
@@ -217,9 +331,9 @@ def _parse_metadata(file_path: Path) -> dict:
     # label: control / endo / exo (всегда на 3 уровне от конца)
     label = file_path.parts[-3].lower()
     
-    # group: mk1 → 1, mend2a → 2a, mexo3 → 3 и т.д.
-    group_dir = file_path.parts[-2].lower()
-    group = group_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
+    # animal: mk1 → 1, mend2a → 2a, mexo3 → 3 и т.д.
+    animal_dir = file_path.parts[-2].lower()
+    animal = animal_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
     
     # filename в нижнем регистре для поиска (используется только для парсинга)
     fname = file_path.name.lower()
@@ -233,7 +347,7 @@ def _parse_metadata(file_path: Path) -> dict:
     
     return {
         'label': label,
-        'group': group,
+        'animal': animal,
         'center': center,
         'brain': brain
         # filename исключён
@@ -249,8 +363,8 @@ def _parse_metadata(file_path: Path) -> dict:
     """Парсинг метаданных из пути и имени файла + place"""
     label = file_path.parts[-3].lower()
     
-    group_dir = file_path.parts[-2].lower()
-    group = group_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
+    animal_dir = file_path.parts[-2].lower()
+    animal = animal_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
     
     fname = file_path.name.lower()
     
@@ -269,7 +383,7 @@ def _parse_metadata(file_path: Path) -> dict:
     
     return {
         'label': label,
-        'group': group,
+        'animal': animal,
         'center': center,
         'brain': brain,
         'place': place,
@@ -286,8 +400,8 @@ def _parse_metadata(file_path: Path) -> dict:
     """Парсинг метаданных из пути и имени файла"""
     label = file_path.parts[-3].lower()
     
-    group_dir = file_path.parts[-2].lower()
-    group = group_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
+    animal_dir = file_path.parts[-2].lower()
+    animal= animal_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
     
     fname = file_path.name.lower()
     
@@ -306,7 +420,7 @@ def _parse_metadata(file_path: Path) -> dict:
     
     return {
         'label': label,
-        'group': group,
+        'animal': animal,
         'center': center,
         'brain': brain,
         'place': place
@@ -320,7 +434,7 @@ from typing import Optional
 
 # Явно задаём возможные значения (для экономии памяти и ускорения)
 LABEL_CATS = ['control', 'endo', 'exo']
-GROUP_CATS = ['1', '2a', '2b', '3']
+ANIMAL_CATS = ['1', '2a', '2b', '3']
 CENTER_CATS = ['1500', '2900']
 
 # brain — 7 значений, которые вы указали
@@ -337,8 +451,8 @@ BRAIN_CATS = [
 def _parse_metadata(file_path: Path) -> dict:
     label = file_path.parts[-3].lower()
     
-    group_dir = file_path.parts[-2].lower()
-    group = group_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
+    animal_dir = file_path.parts[-2].lower()
+    animal = animal_dir.replace('mk', '').replace('mend', '').replace('mexo', '')
     
     fname = file_path.name.lower()
     
@@ -353,7 +467,7 @@ def _parse_metadata(file_path: Path) -> dict:
     
     return {
         'label': label,
-        'group': group,
+        'animal': animal,
         'center': center,
         'brain': brain,
         'place': place
@@ -416,7 +530,7 @@ def load_raman_spectra(
     
     # Применяем CategoricalDtype с фиксированными категориями
     df['label']  = df['label'].astype(pd.CategoricalDtype(categories=LABEL_CATS,  ordered=False))
-    df['group']  = df['group'].astype(pd.CategoricalDtype(categories=GROUP_CATS,  ordered=False))
+    df['animal']  = df['animal'].astype(pd.CategoricalDtype(categories=ANIMAL_CATS,  ordered=False))
     df['center'] = df['center'].astype(pd.CategoricalDtype(categories=CENTER_CATS, ordered=False))
     df['brain']  = df['brain'].astype(pd.CategoricalDtype(categories=BRAIN_CATS,  ordered=False))
     
