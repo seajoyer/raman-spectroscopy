@@ -39,10 +39,8 @@
     "parskip")
    (LaTeX-add-labels
     "eq:f1macro"
-    "fig:pipeline"
     "eq:als"
     "eq:snv"
-    "fig:preproc"
     "tab:bands"
     "fig:importance"
     "tab:loao"
