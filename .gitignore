@@ -17,6 +17,7 @@ report/report.log
 report/report.out
 report/report.synctex.gz
 report/report.tex
+report/report.aux
 
 __pycache__/
 .venv/
