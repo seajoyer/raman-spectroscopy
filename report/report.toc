@@ -1,26 +1,26 @@
 \babel@toc {russian}{}\relax 
-\contentsline {section}{\numberline {1}Постановка задачи}{2}{section.1}%
-\contentsline {subsection}{\numberline {1.1}Формальная постановка}{2}{subsection.1.1}%
-\contentsline {subsection}{\numberline {1.2}Данные}{2}{subsection.1.2}%
-\contentsline {section}{\numberline {2}Методология}{3}{section.2}%
-\contentsline {subsection}{\numberline {2.1}Предобработка спектров}{3}{subsection.2.1}%
-\contentsline {paragraph}{Усреднение и построение общей сетки.}{3}{section*.2}%
-\contentsline {paragraph}{Коррекция флуоресцентного фона.}{3}{section*.3}%
-\contentsline {paragraph}{Сглаживание.}{3}{section*.4}%
-\contentsline {paragraph}{Стандартное нормальное варьирование (SNV).}{3}{section*.5}%
-\contentsline {subsection}{\numberline {2.2}Извлечение признаков}{4}{subsection.2.2}%
-\contentsline {paragraph}{Признаки биохимических полос.}{4}{section*.7}%
-\contentsline {paragraph}{Производные признаки.}{5}{section*.9}%
-\contentsline {paragraph}{Вейвлет-признаки.}{5}{section*.10}%
-\contentsline {paragraph}{Зональные статистики.}{5}{section*.11}%
-\contentsline {paragraph}{Снижение размерности (PCA и NMF).}{5}{section*.12}%
-\contentsline {paragraph}{Отбор признаков.}{6}{section*.13}%
-\contentsline {subsection}{\numberline {2.3}Стратегия валидации: Leave-One-Animal-Out}{6}{subsection.2.3}%
-\contentsline {subsection}{\numberline {2.4}Базовые модели и подбор гиперпараметров}{6}{subsection.2.4}%
-\contentsline {subsection}{\numberline {2.5}Ансамблирование: стекинг с оптимизацией порогов}{6}{subsection.2.5}%
-\contentsline {section}{\numberline {3}Результаты}{7}{section.3}%
-\contentsline {subsection}{\numberline {3.1}Итоговые метрики классификации}{7}{subsection.3.1}%
-\contentsline {subsection}{\numberline {3.2}Анализ значимости признаков}{7}{subsection.3.2}%
-\contentsline {subsection}{\numberline {3.3}Пространство признаков: визуализация PCA}{8}{subsection.3.3}%
-\contentsline {section}{\numberline {4}Обсуждение}{8}{section.4}%
-\contentsline {section}{\numberline {5}Заключение}{8}{section.5}%
+\contentsline {section}{\numberline {1}Постановка задачи}{4}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Формальная постановка}{4}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Данные}{4}{subsection.1.2}%
+\contentsline {section}{\numberline {2}Методология}{5}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Предобработка спектров}{5}{subsection.2.1}%
+\contentsline {paragraph}{Усреднение и построение общей сетки.}{5}{section*.2}%
+\contentsline {paragraph}{Коррекция флуоресцентного фона.}{5}{section*.3}%
+\contentsline {paragraph}{Сглаживание.}{6}{section*.4}%
+\contentsline {paragraph}{Стандартное нормальное варьирование (SNV).}{6}{section*.5}%
+\contentsline {subsection}{\numberline {2.2}Извлечение признаков}{7}{subsection.2.2}%
+\contentsline {paragraph}{Признаки биохимических полос.}{7}{section*.7}%
+\contentsline {paragraph}{Производные признаки.}{7}{section*.9}%
+\contentsline {paragraph}{Вейвлет-признаки.}{8}{section*.10}%
+\contentsline {paragraph}{Зональные статистики.}{8}{section*.11}%
+\contentsline {paragraph}{Снижение размерности (PCA и NMF).}{8}{section*.12}%
+\contentsline {paragraph}{Отбор признаков.}{8}{section*.13}%
+\contentsline {subsection}{\numberline {2.3}Стратегия валидации: Leave-One-Animal-Out}{8}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Базовые модели и подбор гиперпараметров}{9}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}Ансамблирование: стекинг с оптимизацией порогов}{9}{subsection.2.5}%
+\contentsline {section}{\numberline {3}Результаты}{10}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Итоговые метрики классификации}{10}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Анализ значимости признаков}{11}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Пространство признаков: визуализация PCA}{11}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Обсуждение}{11}{section.4}%
+\contentsline {section}{\numberline {5}Заключение}{12}{section.5}%

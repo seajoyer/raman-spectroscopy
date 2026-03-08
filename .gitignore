@@ -1,7 +1,7 @@
 .ipynb_checkpoints/
 data/*
 notebooks/plots/*
-notebooks/catboost_info/*
+catboost_info
 pyrightconfig.json
 credit_scoring.egg-info
 delme.png
@@ -11,6 +11,12 @@ devenv.local.nix
 devenv.local.yaml
 devenv.lock
 uv.lock
+
+report/.auctex-auto
+report/report.log
+report/report.out
+report/report.synctex.gz
+report/report.tex
 
 __pycache__/
 .venv/

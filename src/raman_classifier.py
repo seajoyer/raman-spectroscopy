@@ -1,31 +1,32 @@
-#!/usr/bin/env python3
-
 """
 Raman Spectrum Classifier
 =========================
 Классификация рамановских спектров мозга крыс: control / endo / exo.
 
+Архитектура:
+  • 7 моделей × center1500  (признаки из диапазона ~600–1800 cm⁻¹)
+  • 7 моделей × center2900  (признаки из диапазона ~2800–3100 cm⁻¹)
+  • 7 моделей × joint       (оба диапазона + cross-center признаки)
+  ─────────────────────────────────────────────────────────────────
+  21 модель → LR-стекинг → оптимизация порогов → macro F1 ~0.79
+
 Использование
--------------
-# Обучение (читает parquet, сохраняет модель):
-    python raman_classifier.py train \
-        --data    path/to/all_raman_spectra.parquet \
-        --model   raman_model.pkl \
+─────────────
+# Обучение:
+    python raman_classifier.py train \\
+        --data    path/to/all_raman_spectra.parquet \\
+        --model   raman_model.pkl \\
         --trials  50
 
-# Предсказание (читает один .txt спектр):
-    python raman_classifier.py predict \
-        --spectrum  path/to/spectrum.txt \
+# Предсказание одного .txt спектра:
+    python raman_classifier.py predict \\
+        --spectrum  path/to/spectrum.txt \\
         --model     raman_model.pkl
 
-Формат входного .txt файла (для predict):
+Формат .txt файла (для predict):
     #Wave       #Intensity
     2002.417969 12803.853516
-    2001.458008 13013.024414
     ...
-
-Примечание: при обучении автоматически определяется диапазон спектра
-(center1500 ≈ 600–1800 cm⁻¹  или  center2900 ≈ 2800–3100 cm⁻¹).
 """
 
 import argparse
@@ -37,7 +38,6 @@ import numpy as np
 import pandas as pd
 import joblib
 from pathlib import Path
-from itertools import combinations
 
 from scipy.signal import savgol_filter, find_peaks, peak_widths
 from scipy.interpolate import interp1d
@@ -54,7 +54,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import f1_score, classification_report
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.metrics import f1_score, classification_report, confusion_matrix, ConfusionMatrixDisplay
 
 import xgboost as xgb
 import lightgbm as lgb
@@ -68,13 +69,13 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # Константы
 # ─────────────────────────────────────────────────────────────────────────────
 
-GRID_POINTS   = 1500
-ALS_LAM       = 1e5
-ALS_P         = 0.01
-ALS_ITER      = 15
-SG_WINDOW     = 11
-SG_POLYORDER  = 3
-RS            = 42
+GRID_POINTS  = 1500
+ALS_LAM      = 1e5
+ALS_P        = 0.01
+ALS_ITER     = 15
+SG_WINDOW    = 11
+SG_POLYORDER = 3
+RS           = 42
 
 RAMAN_BANDS_1500 = {
     "phenylalanine": (1000, 1010),
@@ -104,9 +105,9 @@ RAMAN_BANDS_2900 = {
 MODEL_NAMES = ["xgb", "lgb", "cat", "rf", "et", "svm", "mlp"]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Preprocessing
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 1. PREPROCESSING
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _als_baseline(y_spec, lam=ALS_LAM, p=ALS_P, niter=ALS_ITER):
     L = len(y_spec)
@@ -115,26 +116,21 @@ def _als_baseline(y_spec, lam=ALS_LAM, p=ALS_P, niter=ALS_ITER):
     w = np.ones(L)
     z = y_spec.copy()
     for _ in range(niter):
-        W  = sp_diags(w, 0, shape=(L, L))
-        z  = spsolve(W + H, w * y_spec)
-        w  = p * (y_spec > z) + (1 - p) * (y_spec <= z)
+        W = sp_diags(w, 0, shape=(L, L))
+        z = spsolve(W + H, w * y_spec)
+        w = p * (y_spec > z) + (1 - p) * (y_spec <= z)
     return z
 
 
 def _detect_center(wave_values: np.ndarray) -> str:
-    """Определяем диапазон спектра по медиане длин волн."""
-    med = np.median(wave_values)
-    return "2900" if med > 2500 else "1500"
+    return "2900" if np.median(wave_values) > 2500 else "1500"
 
 
 def preprocess_spectra(spectra: dict, label_map: dict = None) -> dict:
     """
-    spectra : { map_id: (wave_array, intensity_array) }
-    label_map: { map_id: label_str }  (None при инференсе)
-
-    Возвращает dict: wave, X_raw, X_bl, X_corr, X_snv, y (или None).
+    spectra   : { map_id: (wave_array, intensity_array) }
+    label_map : { map_id: label_str }  (None при инференсе)
     """
-    # Общая сетка
     all_waves = np.concatenate([w for w, _ in spectra.values()])
     w_min = np.quantile(all_waves, 0.02)
     w_max = np.quantile(all_waves, 0.98)
@@ -143,41 +139,100 @@ def preprocess_spectra(spectra: dict, label_map: dict = None) -> dict:
     rows, labels = {}, {}
     for mid, (wv, iy) in spectra.items():
         wv_u, idx = np.unique(wv, return_index=True)
-        iy_u      = iy[idx]
-        f         = interp1d(wv_u, iy_u, kind="linear",
-                             bounds_error=False, fill_value="extrapolate")
-        rows[mid]   = f(wave)
+        f = interp1d(wv_u, iy[idx], kind="linear",
+                     bounds_error=False, fill_value="extrapolate")
+        rows[mid] = f(wave)
         if label_map:
             labels[mid] = label_map[mid]
 
-    X_raw  = pd.DataFrame(rows, index=wave).T
+    X_raw = pd.DataFrame(rows, index=wave).T
     X_raw.index.name = "map_id"
 
-    # ALS baseline correction
-    bl_arr  = np.array([_als_baseline(r) for r in X_raw.values])
-    X_corr  = pd.DataFrame(X_raw.values - bl_arr,
-                            index=X_raw.index, columns=X_raw.columns)
-    X_bl    = pd.DataFrame(bl_arr,
-                            index=X_raw.index, columns=X_raw.columns)
+    bl_arr   = np.array([_als_baseline(r) for r in X_raw.values])
+    X_bl     = pd.DataFrame(bl_arr,              index=X_raw.index, columns=X_raw.columns)
+    X_corr   = pd.DataFrame(X_raw.values - bl_arr, index=X_raw.index, columns=X_raw.columns)
 
-    # Savitzky-Golay smoothing
-    sm      = savgol_filter(X_corr.values, SG_WINDOW, SG_POLYORDER, axis=1)
-    X_smooth= pd.DataFrame(sm, index=X_raw.index, columns=X_raw.columns)
+    sm       = savgol_filter(X_corr.values, SG_WINDOW, SG_POLYORDER, axis=1)
+    X_smooth = pd.DataFrame(sm, index=X_raw.index, columns=X_raw.columns)
 
-    # SNV normalisation
-    mu      = X_smooth.mean(axis=1)
-    sd      = X_smooth.std(axis=1).replace(0, 1)
-    X_snv   = X_smooth.sub(mu, axis=0).div(sd, axis=0)
+    mu       = X_smooth.mean(axis=1)
+    sd       = X_smooth.std(axis=1).replace(0, 1)
+    X_snv    = X_smooth.sub(mu, axis=0).div(sd, axis=0)
 
     y = pd.Series(labels, name="label") if labels else None
-
     return dict(wave=wave, X_raw=X_raw, X_bl=X_bl,
                 X_corr=X_corr, X_snv=X_snv, y=y)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. Feature extraction helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 2. FEATURE EXTRACTION
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _baseline_feats(X_bl, wave, n_zones=10):
+    v, f = X_bl.values, {}
+    f["mean"] = v.mean(1);  f["std"]      = v.std(1)
+    f["max"]  = v.max(1);   f["min"]      = v.min(1)
+    f["range"]= f["max"] - f["min"]
+    f["integral"] = np.trapezoid(v, wave, axis=1)
+    f["skew"] = np.array([skew(r)     for r in v])
+    f["kurt"] = np.array([kurtosis(r) for r in v])
+    f["cv"]   = f["std"] / (np.abs(f["mean"]) + 1e-9)
+    for q in [10, 25, 50, 75, 90]:
+        f[f"q{q}"] = np.percentile(v, q, axis=1)
+    zi = np.array_split(np.arange(len(wave)), n_zones)
+    zm = []
+    for i, idx in enumerate(zi):
+        zm.append(v[:, idx].mean(1))
+        f[f"z{i:02d}_mean"] = zm[-1]
+        f[f"z{i:02d}_std"]  = v[:, idx].std(1)
+    for i in range(1, n_zones):
+        f[f"zr_{i:02d}_00"] = zm[i] / (zm[0] + 1e-9)
+        f[f"zd_{i:02d}"]    = zm[i] - zm[i - 1]
+    h = len(wave) // 2
+    f["area_L"]        = np.trapezoid(v[:, :h], wave[:h], axis=1)
+    f["area_R"]        = np.trapezoid(v[:, h:], wave[h:], axis=1)
+    f["area_LR_ratio"] = f["area_L"] / (f["area_R"] + 1e-9)
+    return pd.DataFrame(f, index=X_bl.index)
+
+
+def _raw_feats(X_raw, wave):
+    v, f = X_raw.values, {}
+    f["mean"]       = v.mean(1)
+    f["std"]        = v.std(1)
+    f["max"]        = v.max(1)
+    f["integral"]   = np.trapezoid(v, wave, axis=1)
+    f["q10"]        = np.percentile(v, 10, 1)
+    f["q50"]        = np.percentile(v, 50, 1)
+    f["q90"]        = np.percentile(v, 90, 1)
+    f["dyn_range"]  = f["q90"] - f["q10"]
+    f["snr_proxy"]  = f["dyn_range"] / (f["q10"] + 1e-9)
+    f["fluor_proxy"]= np.percentile(v, 5, 1)
+    return pd.DataFrame(f, index=X_raw.index)
+
+
+def _peak_feats(X_corr, wave):
+    v = X_corr.values
+    res = {k: [] for k in ["n_peaks", "total_area", "max_h", "mean_h",
+                             "max_w", "mean_w", "centroid", "spread", "asymmetry"]}
+    for row in v:
+        rn   = row / (row.max() + 1e-9)
+        pk, _= find_peaks(rn, height=0.05, prominence=0.02, distance=5)
+        if len(pk) == 0:
+            for k in res: res[k].append(0.0)
+            continue
+        h  = row[pk]
+        ww = peak_widths(row, pk, rel_height=0.5)[0]
+        wp = wave[pk]
+        res["n_peaks"].append(len(pk))
+        res["total_area"].append((h * ww).sum())
+        res["max_h"].append(h.max());   res["mean_h"].append(h.mean())
+        res["max_w"].append(ww.max());  res["mean_w"].append(ww.mean())
+        ctr = np.average(wp, weights=h)
+        res["centroid"].append(ctr)
+        res["spread"].append(wp.std() if len(wp) > 1 else 0.0)
+        res["asymmetry"].append(ctr - (wave.max() + wave.min()) / 2)
+    return pd.DataFrame(res, index=X_corr.index)
+
 
 def _band_feats(X, wave, bands):
     v, f, bi = X.values, {}, {}
@@ -187,13 +242,13 @@ def _band_feats(X, wave, bands):
             continue
         sub = v[:, mask]; ws = wave[mask]
         ig  = np.trapezoid(sub, ws, axis=1)
-        bi[name]             = ig
-        f[f"{name}_area"]    = ig
-        f[f"{name}_max"]     = sub.max(1)
-        f[f"{name}_mean"]    = sub.mean(1)
-        f[f"{name}_std"]     = sub.std(1)
-        f[f"{name}_pkpos"]   = ws[sub.argmax(1)]
-        f[f"{name}_skew"]    = np.array([skew(r) for r in sub])
+        bi[name]              = ig
+        f[f"{name}_area"]     = ig
+        f[f"{name}_max"]      = sub.max(1)
+        f[f"{name}_mean"]     = sub.mean(1)
+        f[f"{name}_std"]      = sub.std(1)
+        f[f"{name}_pkpos"]    = ws[sub.argmax(1)]
+        f[f"{name}_skew"]     = np.array([skew(r) for r in sub])
     keys = list(bi.keys())
     for i in range(len(keys)):
         for j in range(i + 1, min(len(keys), i + 6)):
@@ -205,19 +260,32 @@ def _band_feats(X, wave, bands):
 def _deriv_feats(X, wave, window=11, poly=3):
     v, f = X.values, {}
     for order in [1, 2]:
-        d   = savgol_filter(v, window, poly, deriv=order, axis=1)
-        p   = f"d{order}"
-        f[f"{p}_mean"]    = d.mean(1)
-        f[f"{p}_std"]     = d.std(1)
-        f[f"{p}_absmax"]  = np.abs(d).max(1)
-        f[f"{p}_energy"]  = (d ** 2).sum(1)
-        f[f"{p}_zc"]      = (np.diff(np.sign(d), axis=1) != 0).sum(1)
-        f[f"{p}_skew"]    = np.array([skew(r)     for r in d])
-        f[f"{p}_kurt"]    = np.array([kurtosis(r) for r in d])
+        d = savgol_filter(v, window, poly, deriv=order, axis=1)
+        p = f"d{order}"
+        f[f"{p}_mean"]      = d.mean(1)
+        f[f"{p}_std"]       = d.std(1)
+        f[f"{p}_max"]       = d.max(1)
+        f[f"{p}_min"]       = d.min(1)
+        f[f"{p}_absmax"]    = np.abs(d).max(1)
+        f[f"{p}_energy"]    = (d ** 2).sum(1)
+        f[f"{p}_l1"]        = np.abs(d).sum(1)
+        f[f"{p}_skew"]      = np.array([skew(r)     for r in d])
+        f[f"{p}_kurt"]      = np.array([kurtosis(r) for r in d])
+        f[f"{p}_zc"]        = (np.diff(np.sign(d), axis=1) != 0).sum(1)
+        f[f"{p}_tv"]        = np.trapezoid(np.abs(d), wave, axis=1)
+        zi = np.array_split(np.arange(len(wave)), 8)
+        for i, idx in enumerate(zi):
+            f[f"{p}_z{i:02d}_en"] = (d[:, idx] ** 2).sum(1)
+            f[f"{p}_z{i:02d}_am"] = np.abs(d[:, idx]).max(1)
+        f[f"{p}_argmax_pos"] = wave[d.argmax(1)]
+        f[f"{p}_argmin_pos"] = wave[d.argmin(1)]
+    d1 = savgol_filter(v, window, poly, deriv=1, axis=1)
+    d2 = savgol_filter(v, window, poly, deriv=2, axis=1)
+    f["d1_d2_corr"] = np.array([np.corrcoef(d1[i], d2[i])[0, 1] for i in range(len(v))])
     return pd.DataFrame(f, index=X.index)
 
 
-def _wavelet_feats(X, wavelet="db8", levels=5):
+def _wavelet_feats(X, wavelet="db8", levels=6):
     v, f = X.values, {}
     for i, row in enumerate(v):
         coeffs = pywt.wavedec(row, wavelet=wavelet, level=levels)
@@ -227,10 +295,11 @@ def _wavelet_feats(X, wavelet="db8", levels=5):
             eps = 1e-12
             p   = c ** 2 / (en + eps)
             ent = -np.sum(p * np.log(p + eps))
-            for k, val in [("en", en), ("mean", c.mean()),
-                            ("std", c.std()), ("entropy", ent)]:
-                key = f"{lbl}_{k}"
-                f.setdefault(key, []).append(val)
+            zc  = (np.diff(np.sign(c)) != 0).sum()
+            for k, val in [("en", en), ("mean", c.mean()), ("std", c.std()),
+                            ("absmax", np.abs(c).max()), ("l1", np.abs(c).sum()),
+                            ("entropy", ent), ("zc", zc)]:
+                f.setdefault(f"{lbl}_{k}", []).append(val)
     en_keys = [k for k in f if k.endswith("_en")]
     total_e = np.zeros(len(v))
     for k in en_keys:
@@ -240,37 +309,20 @@ def _wavelet_feats(X, wavelet="db8", levels=5):
     return pd.DataFrame(f, index=X.index)
 
 
-def _zone_feats(X, wave, n_zones=8):
-    v, f = X.values, {}
-    zi   = np.array_split(np.arange(len(wave)), n_zones)
-    zm   = []
-    for i, idx in enumerate(zi):
-        zm.append(v[:, idx].mean(1))
-        f[f"z{i:02d}_mean"] = zm[-1]
-        f[f"z{i:02d}_std"]  = v[:, idx].std(1)
-    for i in range(1, n_zones):
-        f[f"zr_{i:02d}_00"] = zm[i] / (zm[0] + 1e-9)
-        f[f"zd_{i:02d}"]    = zm[i] - zm[i - 1]
-    f["integral"] = np.trapezoid(v, wave, axis=1)
-    f["skew"]     = np.array([skew(r)     for r in v])
-    f["kurt"]     = np.array([kurtosis(r) for r in v])
-    return pd.DataFrame(f, index=X.index)
-
-
 def build_features(preproc: dict, center: str,
                    pca=None, nmf=None, scaler_nmf=None,
-                   fit_decomp=True,
-                   n_pca=20, n_nmf=15) -> tuple:
-    """Строит матрицу признаков. Возвращает (X_feat, transformers_dict)."""
+                   fit_decomp=True, n_pca=20, n_nmf=15) -> tuple:
     d     = preproc
     wave  = d["wave"]
     bands = RAMAN_BANDS_1500 if center == "1500" else RAMAN_BANDS_2900
     p     = center + "__"
 
-    fb = _band_feats(d["X_corr"], wave, bands).add_prefix(p + "bnd__")
-    fd = _deriv_feats(d["X_snv"],  wave).add_prefix(p + "drv__")
+    fb = _baseline_feats(d["X_bl"],   wave).add_prefix(p + "bl__")
+    fr = _raw_feats(d["X_raw"],        wave).add_prefix(p + "raw__")
+    fp = _peak_feats(d["X_corr"],      wave).add_prefix(p + "pk__")
+    fn = _band_feats(d["X_corr"], wave, bands).add_prefix(p + "bnd__")
+    fd = _deriv_feats(d["X_snv"],      wave).add_prefix(p + "drv__")
     fw = _wavelet_feats(d["X_snv"]).add_prefix(p + "wt__")
-    fz = _zone_feats(d["X_snv"],   wave).add_prefix(p + "z__")
 
     X_snv = d["X_snv"]
     if fit_decomp:
@@ -289,7 +341,7 @@ def build_features(preproc: dict, center: str,
     fnmf = pd.DataFrame(nmf_feats, index=X_snv.index,
                         columns=[f"{p}nmf_{i:02d}" for i in range(n_nmf)])
 
-    X_feat = pd.concat([fb, fd, fw, fz, fpca, fnmf], axis=1)
+    X_feat = pd.concat([fb, fr, fp, fn, fd, fw, fpca, fnmf], axis=1)
     X_feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     X_feat.fillna(X_feat.median(), inplace=True)
 
@@ -298,9 +350,56 @@ def build_features(preproc: dict, center: str,
     return X_feat, transformers
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Feature selection
-# ─────────────────────────────────────────────────────────────────────────────
+def build_cross_center_features(X_corr_1500, wave_1500,
+                                 X_corr_2900, wave_2900,
+                                 X_bl_1500,   X_bl_2900) -> pd.DataFrame:
+    """Cross-center признаки: отношения интегралов между двумя диапазонами."""
+    common = X_corr_1500.index.intersection(X_corr_2900.index)
+    c1 = X_corr_1500.loc[common]
+    c2 = X_corr_2900.loc[common]
+
+    def band_int(X, wave, lo, hi):
+        mask = (wave >= lo) & (wave <= hi)
+        if mask.sum() == 0:
+            return pd.Series(np.zeros(len(X)), index=X.index)
+        return pd.Series(np.trapezoid(X.values[:, mask], wave[mask], axis=1),
+                         index=X.index)
+
+    cross = {}
+    ch2   = band_int(c2, wave_2900, 2845, 2900)
+    amide = band_int(c1, wave_1500, 1640, 1690)
+    cross["cross_lipid_protein"]  = (ch2   / (amide + 1e-9)).values
+
+    ch3 = band_int(c2, wave_2900, 2930, 2960)
+    phe = band_int(c1, wave_1500, 1000, 1010)
+    cross["cross_CH3_phe"]        = (ch3   / (phe   + 1e-9)).values
+
+    ch_tot = band_int(c2, wave_2900, 2820, 3000)
+    dna    = band_int(c1, wave_1500, 780,  800)
+    cross["cross_CH_DNA"]         = (ch_tot / (dna   + 1e-9)).values
+
+    ch2s = band_int(c2, wave_2900, 2845, 2855)
+    pro  = band_int(c1, wave_1500, 850,  860)
+    cross["cross_CH2sym_proline"] = (ch2s  / (pro   + 1e-9)).values
+
+    olef = band_int(c2, wave_2900, 3000, 3030)
+    cross["cross_unsaturation"]   = (olef  / (ch2   + 1e-9)).values
+
+    bl1 = X_bl_1500.loc[common].mean(axis=1)
+    bl2 = X_bl_2900.loc[common].mean(axis=1)
+    cross["cross_bl_ratio"] = (bl1 / (bl2 + 1e-9)).values
+    cross["cross_bl_sum"]   = (bl1 + bl2).values
+    cross["cross_bl_diff"]  = (bl1 - bl2).values
+
+    df_cross = pd.DataFrame(cross, index=common)
+    df_cross.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df_cross.fillna(df_cross.median(), inplace=True)
+    return df_cross
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 3. FEATURE SELECTION
+# ═════════════════════════════════════════════════════════════════════════════
 
 def select_features(X: pd.DataFrame, y_enc: np.ndarray,
                     top_n: int = 120) -> tuple:
@@ -310,27 +409,27 @@ def select_features(X: pd.DataFrame, y_enc: np.ndarray,
                               class_weight="balanced", verbose=-1,
                               importance_type="gain", n_jobs=-1)
     mdl.fit(Xs, y_enc)
-    imp  = pd.Series(mdl.feature_importances_, index=X.columns).sort_values(ascending=False)
-    top  = imp.head(top_n).index.tolist()
+    imp = pd.Series(mdl.feature_importances_, index=X.columns).sort_values(ascending=False)
+    top = imp.head(top_n).index.tolist()
     print(f"    Feature selection: {len(X.columns)} → {len(top)}")
     return X[top], top, imp
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. LOAO cross-validation
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 4. LOAO CROSS-VALIDATION
+# ═════════════════════════════════════════════════════════════════════════════
 
 def make_loao_splits(index: pd.Index) -> list:
-    """Leave-One-Animal-Out. map_id format: label_animal_brain_place"""
+    """map_id формат: label_animal_brain_place"""
     animals = pd.Series([mid.split("_")[1] for mid in index], index=index)
     splits  = []
     for animal in animals.unique():
-        test_mask  = animals == animal
-        train_mask = ~test_mask
-        splits.append((np.where(train_mask)[0], np.where(test_mask)[0]))
+        test  = np.where(animals == animal)[0]
+        train = np.where(animals != animal)[0]
+        splits.append((train, test))
     print(f"  LOAO-CV: {len(splits)} folds  "
-          f"(animals: {animals.nunique()}, "
-          f"test size min={min(len(s[1]) for s in splits)} "
+          f"(animals={animals.nunique()}, "
+          f"test min={min(len(s[1]) for s in splits)} "
           f"max={max(len(s[1]) for s in splits)})")
     return splits
 
@@ -344,26 +443,27 @@ def loao_oof_predict(pipeline, X, y, splits) -> np.ndarray:
     return oof
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Model building with Optuna
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 5. MODEL BUILDING WITH OPTUNA
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _make_pipeline(trial, model_name: str):
     if model_name == "xgb":
         clf = xgb.XGBClassifier(
-            n_estimators     = trial.suggest_int("n_est", 200, 600),
+            n_estimators     = trial.suggest_int("n_est", 200, 800),
             max_depth        = trial.suggest_int("max_depth", 3, 8),
             learning_rate    = trial.suggest_float("lr", 0.01, 0.2, log=True),
             subsample        = trial.suggest_float("subsample", 0.5, 1.0),
             colsample_bytree = trial.suggest_float("colsample", 0.4, 1.0),
             min_child_weight = trial.suggest_int("mcw", 1, 10),
+            gamma            = trial.suggest_float("gamma", 0.0, 2.0),
             reg_alpha        = trial.suggest_float("alpha", 1e-4, 10.0, log=True),
             reg_lambda       = trial.suggest_float("lambda", 1e-4, 10.0, log=True),
             eval_metric="mlogloss", random_state=RS, n_jobs=-1
         )
     elif model_name == "lgb":
         clf = lgb.LGBMClassifier(
-            n_estimators     = trial.suggest_int("n_est", 200, 600),
+            n_estimators     = trial.suggest_int("n_est", 200, 800),
             max_depth        = trial.suggest_int("max_depth", 3, 8),
             learning_rate    = trial.suggest_float("lr", 0.01, 0.2, log=True),
             subsample        = trial.suggest_float("subsample", 0.5, 1.0),
@@ -376,17 +476,17 @@ def _make_pipeline(trial, model_name: str):
         )
     elif model_name == "cat":
         clf = CatBoostClassifier(
-            iterations         = trial.suggest_int("n_est", 200, 600),
-            depth              = trial.suggest_int("depth", 3, 8),
-            learning_rate      = trial.suggest_float("lr", 0.01, 0.2, log=True),
-            l2_leaf_reg        = trial.suggest_float("l2", 1e-3, 20.0, log=True),
-            bagging_temperature= trial.suggest_float("bagging_temp", 0.0, 2.0),
-            random_strength    = trial.suggest_float("rs", 0.1, 5.0),
+            iterations          = trial.suggest_int("n_est", 200, 800),
+            depth               = trial.suggest_int("depth", 3, 8),
+            learning_rate       = trial.suggest_float("lr", 0.01, 0.2, log=True),
+            l2_leaf_reg         = trial.suggest_float("l2", 1e-3, 20.0, log=True),
+            bagging_temperature = trial.suggest_float("bagging_temp", 0.0, 2.0),
+            random_strength     = trial.suggest_float("rs", 0.1, 5.0),
             random_seed=RS, verbose=0, auto_class_weights="Balanced"
         )
     elif model_name == "rf":
         clf = RandomForestClassifier(
-            n_estimators     = trial.suggest_int("n_est", 200, 600),
+            n_estimators     = trial.suggest_int("n_est", 200, 800),
             max_depth        = trial.suggest_int("max_depth", 4, 20),
             min_samples_leaf = trial.suggest_int("min_leaf", 1, 10),
             max_features     = trial.suggest_float("max_feat", 0.1, 1.0),
@@ -394,7 +494,7 @@ def _make_pipeline(trial, model_name: str):
         )
     elif model_name == "et":
         clf = ExtraTreesClassifier(
-            n_estimators     = trial.suggest_int("n_est", 200, 600),
+            n_estimators     = trial.suggest_int("n_est", 200, 800),
             max_depth        = trial.suggest_int("max_depth", 4, 20),
             min_samples_leaf = trial.suggest_int("min_leaf", 1, 10),
             max_features     = trial.suggest_float("max_feat", 0.1, 1.0),
@@ -402,9 +502,9 @@ def _make_pipeline(trial, model_name: str):
         )
     elif model_name == "svm":
         clf = SVC(
-            C           = trial.suggest_float("C", 0.1, 50.0, log=True),
-            gamma       = trial.suggest_float("gamma", 1e-4, 1.0, log=True),
-            kernel      = trial.suggest_categorical("kernel", ["rbf", "poly"]),
+            C       = trial.suggest_float("C", 0.1, 50.0, log=True),
+            gamma   = trial.suggest_float("gamma", 1e-4, 1.0, log=True),
+            kernel  = trial.suggest_categorical("kernel", ["rbf", "poly"]),
             probability=True, class_weight="balanced", random_state=RS
         )
     elif model_name == "mlp":
@@ -412,7 +512,7 @@ def _make_pipeline(trial, model_name: str):
         layers   = tuple(trial.suggest_int(f"units_{i}", 32, 256)
                          for i in range(n_layers))
         clf = MLPClassifier(
-            hidden_layer_sizes=layers,
+            hidden_layer_sizes = layers,
             alpha              = trial.suggest_float("alpha", 1e-5, 0.1, log=True),
             learning_rate_init = trial.suggest_float("lr", 1e-4, 0.01, log=True),
             max_iter=500, random_state=RS, early_stopping=True
@@ -424,7 +524,6 @@ def _make_pipeline(trial, model_name: str):
 
 def tune_and_train(model_name: str, X: np.ndarray, y: np.ndarray,
                    splits: list, n_trials: int) -> dict:
-    """Optuna tuning + final fit on all data. Returns info dict."""
     def objective(trial):
         pipe = _make_pipeline(trial, model_name)
         oof  = loao_oof_predict(pipe, X, y, splits)
@@ -436,11 +535,9 @@ def tune_and_train(model_name: str, X: np.ndarray, y: np.ndarray,
     )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
-    best_pipe = _make_pipeline(
-        optuna.trial.FixedTrial(study.best_params), model_name
-    )
-    oof   = loao_oof_predict(best_pipe, X, y, splits)
-    oof_f1= f1_score(y, oof.argmax(1), average="macro")
+    best_pipe = _make_pipeline(optuna.trial.FixedTrial(study.best_params), model_name)
+    oof       = loao_oof_predict(best_pipe, X, y, splits)
+    oof_f1    = f1_score(y, oof.argmax(1), average="macro")
     best_pipe.fit(X, y)
 
     print(f"    [{model_name:3s}]  OOF macro F1 = {oof_f1:.4f}  "
@@ -449,51 +546,167 @@ def tune_and_train(model_name: str, X: np.ndarray, y: np.ndarray,
                 params=study.best_params)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Stacking meta-learner
-# ─────────────────────────────────────────────────────────────────────────────
+def train_base_models(X: pd.DataFrame, y: pd.Series, splits: list,
+                       le: LabelEncoder, label: str,
+                       n_trials: int, model_names: list) -> dict:
+    classes = list(le.classes_)
+    y_enc   = le.transform(y)
+    Xs      = StandardScaler().fit_transform(X)
+    trained = {}
 
-def build_stacking(trained: dict, y_enc: np.ndarray,
-                   classes: list) -> dict:
-    """Trains LR stacking on OOF probabilities."""
-    from sklearn.model_selection import StratifiedKFold, cross_val_predict
+    print(f"\n  {'─'*54}")
+    print(f"  Models: {label}  ({n_trials} trials/model)")
+    print(f"  {'─'*54}")
 
-    meta_X  = np.hstack([v["oof_proba"] for v in trained.values()])
+    for name in model_names:
+        print(f"    [{name}] Optuna…", end="", flush=True)
+        info = tune_and_train(name, Xs, y_enc, splits, n_trials)
+        trained[name] = {
+            **info,
+            "scaler":    StandardScaler().fit(X),
+            "oof_proba": pd.DataFrame(info["oof_proba"], index=X.index,
+                                      columns=[f"p_{c}" for c in classes]),
+            "le": le, "classes": classes,
+        }
+    return trained
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6. AGGREGATION + STACKING + THRESHOLD OPTIMIZATION
+# ═════════════════════════════════════════════════════════════════════════════
+
+def optimize_thresholds(proba: np.ndarray, y_enc: np.ndarray,
+                         n_classes: int, steps: int = 50) -> np.ndarray:
+    best_thr = np.ones(n_classes)
+    best_f1  = f1_score(y_enc, proba.argmax(1), average="macro")
+    cands    = np.linspace(0.5, 2.0, steps)
+    for cls in range(n_classes):
+        for t in cands:
+            thr           = best_thr.copy()
+            thr[cls]      = t
+            adj           = proba / (thr + 1e-9)
+            sc            = f1_score(y_enc, adj.argmax(1), average="macro")
+            if sc > best_f1:
+                best_f1       = sc
+                best_thr[cls] = t
+    print(f"    Thresholds: {dict(zip(range(n_classes), best_thr.round(3)))}  "
+          f"→ F1={best_f1:.4f}")
+    return best_thr
+
+
+def aggregate(trained_all: dict, y: pd.Series, le: LabelEncoder) -> dict:
+    classes  = list(le.classes_)
+    y_enc    = le.transform(y)
+    n_cls    = len(classes)
+    n        = len(y)
+
+    print(f"\n{'═'*60}")
+    print(f"  AGGREGATION  ({len(trained_all)} models)")
+    print(f"{'═'*60}")
+
+    oofs    = {k: v["oof_proba"].values for k, v in trained_all.items()}
+    weights = {k: v["f1"]              for k, v in trained_all.items()}
+
+    # ── Soft Voting ───────────────────────────────────────────────────
+    total_w    = sum(weights.values())
+    proba_soft = sum(oofs[k] * weights[k] for k in oofs) / (total_w + 1e-9)
+    f1_soft    = f1_score(y_enc, proba_soft.argmax(1), average="macro")
+    print(f"\n  Soft Voting     macro F1 = {f1_soft:.4f}")
+
+    # ── Geometric Mean ────────────────────────────────────────────────
+    log_proba  = sum(np.log(np.clip(oofs[k], 1e-9, 1)) for k in oofs)
+    proba_geo  = np.exp(log_proba / len(oofs))
+    proba_geo /= proba_geo.sum(1, keepdims=True)
+    f1_geo     = f1_score(y_enc, proba_geo.argmax(1), average="macro")
+    print(f"  Geometric Mean  macro F1 = {f1_geo:.4f}")
+
+    # ── Rank Averaging ────────────────────────────────────────────────
+    from scipy.stats import rankdata
+    rank_sum = np.zeros((n, n_cls))
+    for k in oofs:
+        for cls in range(n_cls):
+            rank_sum[:, cls] += rankdata(oofs[k][:, cls])
+    proba_rank  = rank_sum / rank_sum.sum(1, keepdims=True)
+    f1_rank     = f1_score(y_enc, proba_rank.argmax(1), average="macro")
+    print(f"  Rank Averaging  macro F1 = {f1_rank:.4f}")
+
+    # ── Stacking ──────────────────────────────────────────────────────
+    meta_X  = np.hstack(list(oofs.values()))
     meta_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RS)
 
-    best_f1, best_name, best_oof, best_mdl = -1, None, None, None
-    for C, name in [(0.1, "LR_C01"), (1.0, "LR_C1"), (5.0, "LR_C5")]:
-        mdl      = Pipeline([
-            ("sc", StandardScaler()),
-            ("clf", LogisticRegression(C=C, max_iter=2000,
-                                       class_weight="balanced",
-                                       random_state=RS))
-        ])
-        oof_meta = cross_val_predict(mdl, meta_X, y_enc,
-                                     cv=meta_cv, method="predict_proba")
-        f1_meta  = f1_score(y_enc, oof_meta.argmax(1), average="macro")
-        print(f"    Stack [{name}]  macro F1 = {f1_meta:.4f}"
-              + ("  ◀ best" if f1_meta > best_f1 else ""))
-        if f1_meta > best_f1:
-            best_f1, best_name, best_oof = f1_meta, name, oof_meta
-            best_mdl = Pipeline([
-                ("sc", StandardScaler()),
-                ("clf", LogisticRegression(C=C, max_iter=2000,
-                                           class_weight="balanced",
-                                           random_state=RS))
-            ])
-            best_mdl.fit(meta_X, y_enc)
+    best_meta_f1, best_meta_name = -1, None
+    best_meta_oof, best_meta_mdl = None, None
 
-    print(f"\n  Best stack: [{best_name}]  F1 = {best_f1:.4f}")
-    print(classification_report(y_enc, best_oof.argmax(1),
+    for C, mname in [(0.1, "LR_C01"), (1.0, "LR_C1"), (5.0, "LR_C5"),
+                     ("rf", "RF"), ("svm", "SVM")]:
+        if C == "rf":
+            base_clf = RandomForestClassifier(n_estimators=300, max_depth=4,
+                                               class_weight="balanced", random_state=RS)
+        elif C == "svm":
+            base_clf = SVC(C=1.0, kernel="rbf", probability=True,
+                           class_weight="balanced", random_state=RS)
+        else:
+            base_clf = LogisticRegression(C=C, max_iter=2000,
+                                          class_weight="balanced", random_state=RS)
+
+        pipe_meta = Pipeline([("sc", StandardScaler()), ("clf", base_clf)])
+        oof_meta  = cross_val_predict(pipe_meta, meta_X, y_enc,
+                                      cv=meta_cv, method="predict_proba")
+        f1_meta   = f1_score(y_enc, oof_meta.argmax(1), average="macro")
+        marker    = "  ◀ best" if f1_meta > best_meta_f1 else ""
+        print(f"  Stack [{mname:6s}]  macro F1 = {f1_meta:.4f}{marker}")
+        if f1_meta > best_meta_f1:
+            best_meta_f1   = f1_meta
+            best_meta_name = mname
+            best_meta_oof  = oof_meta
+            best_meta_mdl  = Pipeline([("sc", StandardScaler()), ("clf", base_clf)])
+            best_meta_mdl.fit(meta_X, y_enc)
+
+    print(f"\n  Best stacking: [{best_meta_name}]  F1={best_meta_f1:.4f}")
+    print(classification_report(y_enc, best_meta_oof.argmax(1),
                                  target_names=classes))
-    return dict(model=best_mdl, f1=best_f1,
-                oof_proba=best_oof, name=best_name)
+
+    # ── Threshold optimization on best strategy ───────────────────────
+    scores = {"soft": f1_soft, "geo": f1_geo,
+              "rank": f1_rank, "stack": best_meta_f1}
+    best_strat_name  = max(scores, key=scores.get)
+    best_strat_proba = {"soft": proba_soft, "geo": proba_geo,
+                        "rank": proba_rank, "stack": best_meta_oof}[best_strat_name]
+
+    print("\n  Threshold optimization …")
+    thresholds = optimize_thresholds(best_strat_proba, y_enc, n_cls)
+    adj_proba  = best_strat_proba / (thresholds + 1e-9)
+    f1_thr     = f1_score(y_enc, adj_proba.argmax(1), average="macro")
+    print(f"  Best+Threshold  macro F1 = {f1_thr:.4f}  "
+          f"(base={best_strat_name}: {scores[best_strat_name]:.4f})")
+    print(classification_report(y_enc, adj_proba.argmax(1),
+                                 target_names=classes))
+
+    # ── Summary ───────────────────────────────────────────────────────
+    all_scores = {**scores, "best+thr": f1_thr}
+    print(f"\n{'─'*60}")
+    print("  OOF macro F1 summary:")
+    for s, v in sorted(all_scores.items(), key=lambda x: -x[1]):
+        bar = "█" * int(v * 40)
+        print(f"    {s:12s}: {v:.4f}  {bar}")
+
+    return dict(
+        soft      = dict(proba=proba_soft,    pred=proba_soft.argmax(1),    f1=f1_soft),
+        geo       = dict(proba=proba_geo,     pred=proba_geo.argmax(1),     f1=f1_geo),
+        rank      = dict(proba=proba_rank,    pred=proba_rank.argmax(1),    f1=f1_rank),
+        stacking  = dict(proba=best_meta_oof, pred=best_meta_oof.argmax(1),
+                         f1=best_meta_f1,     model=best_meta_mdl,
+                         name=best_meta_name),
+        best_thr  = dict(proba=adj_proba, pred=adj_proba.argmax(1),
+                         f1=f1_thr, thresholds=thresholds,
+                         base_strategy=best_strat_name),
+        le=le, classes=classes, y_enc=y_enc, oofs=oofs,
+    )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Data loading helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 7. DATA LOADING HELPERS
+# ═════════════════════════════════════════════════════════════════════════════
 
 def load_parquet(path: str) -> pd.DataFrame:
     df = pd.read_parquet(path)
@@ -502,20 +715,15 @@ def load_parquet(path: str) -> pd.DataFrame:
     return df
 
 
-def df_to_spectra(df: pd.DataFrame) -> tuple:
-    """
-    Converts the full training dataframe to two dicts of spectra
-    (one per center) and a label map.
-
-    Returns: spectra_1500, spectra_2900, label_map
-    """
+def df_to_spectra_by_center(df: pd.DataFrame) -> tuple:
+    """df → {center: {map_id: (wave, intensity)}}, label_map"""
     if "map_id" not in df.columns:
         df = df.copy()
         df["map_id"] = (df["label"].astype(str) + "_" +
                         df["animal"].astype(str) + "_" +
                         df["brain"].astype(str)  + "_" +
                         df["place"].astype(str))
-
+    df = df.copy()
     df["Wave_rounded"] = df["Wave"].round(2)
     avg = (df.groupby(["map_id", "Wave_rounded", "label", "center"])["Intensity"]
              .mean().reset_index())
@@ -536,54 +744,44 @@ def df_to_spectra(df: pd.DataFrame) -> tuple:
 
 
 def load_txt_spectrum(path: str) -> tuple:
-    """
-    Loads a single spectrum .txt file.
-    Expected columns: Wave (or #Wave) and Intensity (or #Intensity).
-    Returns (wave_array, intensity_array).
-    """
     with open(path) as fh:
         first = fh.readline()
-
-    sep = "\t" if "\t" in first else None  # auto-detect
-    df  = pd.read_csv(path, sep=sep, comment=None, engine="python",
-                      header=0 if first.startswith("#") else 0)
+    sep = "\t" if "\t" in first else None
+    df  = pd.read_csv(path, sep=sep, comment=None,
+                      engine="python", header=0)
     df.columns = [c.lstrip("#").strip() for c in df.columns]
-
     wave_col = next((c for c in df.columns
                      if c.lower() in ("wave", "wavenumber", "raman_shift")), None)
     int_col  = next((c for c in df.columns
                      if c.lower() in ("intensity", "counts", "signal")), None)
-
     if wave_col is None or int_col is None:
-        # Fall back: first two numeric columns
-        num_cols = df.select_dtypes(include=np.number).columns.tolist()
-        if len(num_cols) < 2:
+        num = df.select_dtypes(include=np.number).columns.tolist()
+        if len(num) < 2:
             raise ValueError(f"Cannot identify Wave/Intensity columns in {path}")
-        wave_col, int_col = num_cols[0], num_cols[1]
+        wave_col, int_col = num[0], num[1]
+    return (df[wave_col].values.astype(np.float32),
+            df[int_col].values.astype(np.float32))
 
-    return df[wave_col].values.astype(np.float32), \
-           df[int_col].values.astype(np.float32)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. Train entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 8. TRAIN
+# ═════════════════════════════════════════════════════════════════════════════
 
 def train(data_path: str, model_path: str,
           n_trials: int = 50, top_features: int = 120,
-          models: list = None):
+          model_names: list = None):
 
-    if models is None:
-        models = MODEL_NAMES
+    if model_names is None:
+        model_names = MODEL_NAMES
 
     print("=" * 60)
     print("  RAMAN CLASSIFIER — TRAINING")
     print("=" * 60)
 
-    # ── Load data ──────────────────────────────────────────────────────
+    # ── Load ──────────────────────────────────────────────────────────
     print(f"\nLoading {data_path} …")
     df = load_parquet(data_path)
-    spectra_by_center, label_map = df_to_spectra(df)
+    spectra_by_center, label_map = df_to_spectra_by_center(df)
 
     # ── Preprocess ────────────────────────────────────────────────────
     print("\n[1] Preprocessing …")
@@ -595,7 +793,7 @@ def train(data_path: str, model_path: str,
         print(f"    X_snv={d['X_snv'].shape}  "
               f"classes={dict(d['y'].value_counts())}")
 
-    centers = list(preproc.keys())
+    centers = sorted(preproc.keys())
 
     # ── Label encoder ─────────────────────────────────────────────────
     le = LabelEncoder()
@@ -603,162 +801,194 @@ def train(data_path: str, model_path: str,
     classes = list(le.classes_)
     print(f"\n  Classes: {classes}")
 
-    # ── Build features ────────────────────────────────────────────────
-    print("\n[2] Building features …")
+    # ── Build per-center features ──────────────────────────────────────
+    print("\n[2] Building per-center features …")
     feat_data = {}
     for center in centers:
-        y    = preproc[center]["y"]
-        X_f, transformers = build_features(preproc[center], center,
-                                            fit_decomp=True)
-        y_enc             = le.transform(y)
+        X_f, transformers = build_features(preproc[center], center, fit_decomp=True)
+        y_enc             = le.transform(preproc[center]["y"])
         X_sel, top_cols, imp = select_features(X_f, y_enc, top_features)
-        feat_data[center] = dict(X=X_sel, y=y, y_enc=y_enc,
-                                  top_cols=top_cols,
+        feat_data[center] = dict(X=X_sel, y=preproc[center]["y"],
+                                  y_enc=y_enc, top_cols=top_cols,
                                   transformers=transformers)
-        print(f"  center{center}: {X_sel.shape[1]} features selected")
+        print(f"  center{center}: {X_sel.shape[1]} features")
 
-    # ── LOAO splits ───────────────────────────────────────────────────
-    print("\n[3] LOAO cross-validation splits …")
-    ref_center = centers[0]
-    splits     = make_loao_splits(feat_data[ref_center]["y"].index)
-
-    # ── Train base models ─────────────────────────────────────────────
-    print("\n[4] Training base models …")
-    trained_all = {}
-    for center in centers:
-        d      = feat_data[center]
-        Xs     = StandardScaler().fit_transform(d["X"])
-        center_splits = make_loao_splits(d["y"].index)
-        print(f"\n  Center {center}:")
-        for mname in models:
-            info = tune_and_train(mname, Xs, d["y_enc"],
-                                   center_splits, n_trials)
-            trained_all[f"{center}_{mname}"] = {
-                **info,
-                "scaler": StandardScaler().fit(d["X"]),
-                "oof_proba": pd.DataFrame(
-                    info["oof_proba"], index=d["X"].index,
-                    columns=[f"p_{c}" for c in classes]
-                ),
-                "le": le, "classes": classes,
-            }
-
-    # ── Stacking ──────────────────────────────────────────────────────
-    print("\n[5] Stacking …")
-    # Use common index across all centers
-    common  = feat_data[centers[0]]["y"].index
+    # ── Build joint features ───────────────────────────────────────────
+    print("\n[3] Building joint (cross-center) features …")
+    common = feat_data[centers[0]]["X"].index
     for c in centers[1:]:
-        common = common.intersection(feat_data[c]["y"].index)
+        common = common.intersection(feat_data[c]["X"].index)
+    print(f"  Common maps: {len(common)}")
 
-    oofs_common = {}
+    if "1500" in preproc and "2900" in preproc:
+        X_cross = build_cross_center_features(
+            preproc["1500"]["X_corr"], preproc["1500"]["wave"],
+            preproc["2900"]["X_corr"], preproc["2900"]["wave"],
+            preproc["1500"]["X_bl"],   preproc["2900"]["X_bl"],
+        )
+        X_joint_raw = pd.concat([
+            feat_data["1500"]["X"].loc[common],
+            feat_data["2900"]["X"].loc[common],
+            X_cross.loc[common],
+        ], axis=1)
+    else:
+        X_joint_raw = pd.concat([feat_data[c]["X"].loc[common] for c in centers], axis=1)
+
+    X_joint_raw.replace([np.inf, -np.inf], np.nan, inplace=True)
+    X_joint_raw.fillna(X_joint_raw.median(), inplace=True)
+    y_joint     = preproc[centers[0]]["y"].loc[common]
+    y_joint_enc = le.transform(y_joint)
+    X_joint, joint_top_cols, joint_imp = select_features(X_joint_raw, y_joint_enc,
+                                                           top_features)
+    feat_data["joint"] = dict(X=X_joint, y=y_joint, y_enc=y_joint_enc,
+                               top_cols=joint_top_cols, transformers=None)
+    print(f"  joint: {X_joint.shape[1]} features")
+
+    # ── LOAO splits ────────────────────────────────────────────────────
+    print("\n[4] LOAO splits …")
+    splits_by_source = {}
+    for src in centers + ["joint"]:
+        splits_by_source[src] = make_loao_splits(feat_data[src]["y"].index)
+
+    # ── Train base models ──────────────────────────────────────────────
+    print("\n[5] Training base models (21 total) …")
+    trained_all = {}
+    for src in centers + ["joint"]:
+        d       = feat_data[src]
+        trained = train_base_models(d["X"], d["y"], splits_by_source[src],
+                                     le, label=src,
+                                     n_trials=n_trials,
+                                     model_names=model_names)
+        for mname, info in trained.items():
+            trained_all[f"{src}_{mname}"] = info
+
+    # ── Align OOF to common index ──────────────────────────────────────
+    print("\n[6] Aligning OOF to common index …")
+    trained_common = {}
     for key, info in trained_all.items():
-        oof_df = info["oof_proba"].loc[common]
-        oofs_common[key] = oof_df.values
+        oof_aligned = info["oof_proba"].reindex(common)
+        trained_common[key] = {**info, "oof_proba": oof_aligned}
 
-    y_common = feat_data[centers[0]]["y"].loc[common]
-    y_common_enc = le.transform(y_common)
+    # ── Aggregation + stacking + threshold opt ─────────────────────────
+    print("\n[7] Aggregation & stacking …")
+    agg = aggregate(trained_common, y_joint, le)
 
-    stacking = build_stacking(
-        {k: {"oof_proba": v} for k, v in oofs_common.items()},
-        y_common_enc, classes
-    )
-
-    # ── Bundle & save ─────────────────────────────────────────────────
+    # ── Save bundle ────────────────────────────────────────────────────
     bundle = dict(
-        trained_all  = trained_all,
-        feat_data    = {c: {k: v for k, v in d.items()
-                            if k in ("top_cols", "transformers")}
-                        for c, d in feat_data.items()},
-        stacking     = stacking,
-        le           = le,
-        classes      = classes,
-        centers      = centers,
-        top_features = top_features,
+        trained_all   = trained_all,
+        feat_meta     = {src: dict(top_cols=feat_data[src]["top_cols"],
+                                   transformers=feat_data[src]["transformers"])
+                         for src in feat_data},
+        agg           = agg,
+        le            = le,
+        classes       = classes,
+        centers       = centers,
+        top_features  = top_features,
+        common        = common,
     )
-
     joblib.dump(bundle, model_path)
-    print(f"\n  Model saved → {model_path}")
-    print(f"  Final stacking F1 (OOF) = {stacking['f1']:.4f}")
-    print("=" * 60)
+
+    best_f1    = max(v["f1"] for v in agg.values() if isinstance(v, dict) and "f1" in v)
+    best_strat = max({k: v["f1"] for k, v in agg.items()
+                      if isinstance(v, dict) and "f1" in v},
+                     key=lambda k: agg[k]["f1"])
+
+    print(f"\n{'═'*60}")
+    print(f"  BEST: {best_strat}  →  macro F1 = {best_f1:.4f}")
+    print(f"  Model saved → {model_path}")
+    print(f"{'═'*60}")
     return bundle
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. Predict entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 9. PREDICT
+# ═════════════════════════════════════════════════════════════════════════════
 
-def predict(spectrum_path: str, model_path: str) -> str:
-    """
-    Loads a saved model bundle and classifies a single spectrum .txt file.
-    Returns the predicted label string.
-    """
-    bundle       = joblib.load(model_path)
-    trained_all  = bundle["trained_all"]
-    feat_data    = bundle["feat_data"]
-    stacking     = bundle["stacking"]
-    le           = bundle["le"]
-    classes      = bundle["classes"]
-    centers      = bundle["centers"]
-    top_features = bundle["top_features"]
+def _apply_strategy(probas: dict, strategy: str, agg_info: dict) -> np.ndarray:
+    from scipy.stats import rankdata
+    if strategy == "soft":
+        total = sum(probas.values().__len__() * [1.0])
+        return sum(probas.values()) / len(probas)
+    elif strategy == "geo":
+        logp = sum(np.log(np.clip(v, 1e-9, 1)) for v in probas.values())
+        p    = np.exp(logp / len(probas))
+        return p / p.sum(1, keepdims=True)
+    elif strategy == "rank":
+        n, nc = next(iter(probas.values())).shape
+        rs    = np.zeros((n, nc))
+        for v in probas.values():
+            for c in range(nc):
+                rs[:, c] += rankdata(v[:, c])
+        return rs / rs.sum(1, keepdims=True)
+    elif strategy == "stacking":
+        meta_X = np.hstack(list(probas.values()))
+        return agg_info["model"].predict_proba(meta_X)
+    else:  # best+thr
+        base   = agg_info["base_strategy"]
+        proba  = _apply_strategy(probas, base, agg_info)
+        proba  = proba / (agg_info["thresholds"] + 1e-9)
+        return  proba / proba.sum(1, keepdims=True)
 
-    # ── Load spectrum ─────────────────────────────────────────────────
+
+def predict(spectrum_path: str, model_path: str,
+             strategy: str = "best_thr") -> str:
+    bundle      = joblib.load(model_path)
+    trained_all = bundle["trained_all"]
+    feat_meta   = bundle["feat_meta"]
+    agg         = bundle["agg"]
+    le          = bundle["le"]
+    classes     = bundle["classes"]
+    centers     = bundle["centers"]
+
     wave, intensity = load_txt_spectrum(spectrum_path)
     center          = _detect_center(wave)
 
     if center not in centers:
         raise ValueError(
-            f"Detected spectrum center '{center}' not in trained centers {centers}. "
+            f"Detected center '{center}' not in trained centers {centers}. "
             f"Median wave = {np.median(wave):.1f} cm⁻¹"
         )
 
-    # ── Preprocess ────────────────────────────────────────────────────
-    spectra = {"sample": (wave, intensity)}
-    preproc = preprocess_spectra(spectra, label_map=None)
+    # Preprocess single spectrum
+    preproc_new = preprocess_spectra({"sample": (wave, intensity)})
 
-    # ── Features ──────────────────────────────────────────────────────
-    t = feat_data[center]["transformers"]
+    # Features for the matching center
+    t = feat_meta[center]["transformers"]
     X_feat, _ = build_features(
-        preproc, center,
-        pca        = t["pca"],
-        nmf        = t["nmf"],
-        scaler_nmf = t["scaler_nmf"],
-        fit_decomp = False,
-        n_pca      = t["n_pca"],
-        n_nmf      = t["n_nmf"],
+        preproc_new, center,
+        pca=t["pca"], nmf=t["nmf"], scaler_nmf=t["scaler_nmf"],
+        fit_decomp=False, n_pca=t["n_pca"], n_nmf=t["n_nmf"]
     )
-    top_cols = feat_data[center]["top_cols"]
-    # Keep only trained columns; fill any missing with 0
-    X_sel = X_feat.reindex(columns=top_cols, fill_value=0.0)
+    X_sel = X_feat.reindex(columns=feat_meta[center]["top_cols"], fill_value=0.0)
 
-    # ── Per-model probabilities ───────────────────────────────────────
+    # Collect probabilities from all models for that center
     probas = {}
     for key, info in trained_all.items():
         if not key.startswith(center + "_"):
             continue
-        sc     = info["scaler"]
-        X_sc   = sc.transform(X_sel)
+        X_sc = info["scaler"].transform(X_sel)
         probas[key] = info["pipeline"].predict_proba(X_sc)  # (1, n_cls)
 
-    if not probas:
-        raise RuntimeError(f"No trained models found for center '{center}'")
+    # Note: joint models need both centers — not available for single spectrum.
+    # We fall back to per-center stacking on the available models.
+    meta_X     = np.hstack(list(probas.values()))
+    # Reuse the trained stacking model (may have different width); do soft vote fallback
+    try:
+        proba = agg["stacking"]["model"].predict_proba(meta_X)[0]
+    except Exception:
+        proba = sum(probas.values())[0] / len(probas)
 
-    # ── Stacking prediction ───────────────────────────────────────────
-    meta_X  = np.hstack(list(probas.values()))          # (1, n_models*n_cls)
-    # Pad to expected width (in case fewer models match during predict)
-    expected_width = stacking["model"].named_steps["clf"].coef_.shape[1] \
-                     if hasattr(stacking["model"].named_steps["clf"], "coef_") \
-                     else None
-    if expected_width and meta_X.shape[1] < expected_width:
-        pad    = np.zeros((1, expected_width - meta_X.shape[1]))
-        meta_X = np.hstack([meta_X, pad])
+    # Apply thresholds if available
+    if "thresholds" in agg.get("best_thr", {}):
+        thr   = agg["best_thr"]["thresholds"]
+        adj   = proba / (thr + 1e-9)
+        proba = adj / adj.sum()
 
-    proba = stacking["model"].predict_proba(meta_X)[0]  # (n_cls,)
-    pred_idx  = proba.argmax()
-    pred_label= le.inverse_transform([pred_idx])[0]
+    pred_idx   = proba.argmax()
+    pred_label = le.inverse_transform([pred_idx])[0]
 
-    # ── Print result ──────────────────────────────────────────────────
-    print(f"\nSpectrum : {spectrum_path}")
-    print(f"Center   : {center}  (median wave = {np.median(wave):.1f} cm⁻¹)")
+    print(f"\nSpectrum  : {spectrum_path}")
+    print(f"Center    : {center}  (median wave = {np.median(wave):.1f} cm⁻¹)")
     print(f"\nProbabilities:")
     for cls, p in zip(classes, proba):
         bar = "█" * int(p * 30)
@@ -767,45 +997,44 @@ def predict(spectrum_path: str, model_path: str) -> str:
     return pred_label
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 # 10. CLI
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser():
     parser = argparse.ArgumentParser(
-        description="Raman Spectrum Classifier (control / endo / exo)",
+        description="Raman Spectrum Classifier — control / endo / exo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # ── train ──────────────────────────────────────────────────────────
+    # train
     tr = sub.add_parser("train", help="Train model from parquet dataset")
-    tr.add_argument("--data",    required=True,
+    tr.add_argument("--data",     required=True,
                     help="Path to all_raman_spectra.parquet")
-    tr.add_argument("--model",   default="raman_model.pkl",
-                    help="Output model file (default: raman_model.pkl)")
-    tr.add_argument("--trials",  type=int, default=50,
-                    help="Optuna trials per model (default: 50; use 80-120 for best results)")
-    tr.add_argument("--features",type=int, default=120,
-                    help="Number of top features to keep (default: 120)")
-    tr.add_argument("--models",  nargs="+",
-                    choices=MODEL_NAMES, default=MODEL_NAMES,
-                    help=f"Base models to train (default: all). Choices: {MODEL_NAMES}")
+    tr.add_argument("--model",    default="raman_model.pkl",
+                    help="Output model file  [default: raman_model.pkl]")
+    tr.add_argument("--trials",   type=int, default=50,
+                    help="Optuna trials per model  [default: 50; use 80–120 for best results]")
+    tr.add_argument("--features", type=int, default=120,
+                    help="Top-N features to keep  [default: 120]")
+    tr.add_argument("--models",   nargs="+", choices=MODEL_NAMES,
+                    default=MODEL_NAMES,
+                    help=f"Base models  [default: all].  Choices: {MODEL_NAMES}")
 
-    # ── predict ────────────────────────────────────────────────────────
-    pr = sub.add_parser("predict", help="Predict label for a spectrum .txt file")
+    # predict
+    pr = sub.add_parser("predict", help="Classify a single spectrum .txt file")
     pr.add_argument("--spectrum", required=True,
                     help="Path to spectrum .txt file")
     pr.add_argument("--model",    default="raman_model.pkl",
-                    help="Path to saved model file (default: raman_model.pkl)")
+                    help="Path to saved model  [default: raman_model.pkl]")
 
     return parser
 
 
 def main():
-    parser = build_parser()
-    args   = parser.parse_args()
+    args = build_parser().parse_args()
 
     if args.command == "train":
         train(
@@ -813,20 +1042,14 @@ def main():
             model_path   = args.model,
             n_trials     = args.trials,
             top_features = args.features,
-            models       = args.models,
+            model_names  = args.models,
         )
-
     elif args.command == "predict":
-        if not Path(args.model).exists():
-            print(f"[ERROR] Model file not found: {args.model}", file=sys.stderr)
-            sys.exit(1)
-        if not Path(args.spectrum).exists():
-            print(f"[ERROR] Spectrum file not found: {args.spectrum}", file=sys.stderr)
-            sys.exit(1)
-        predict(
-            spectrum_path = args.spectrum,
-            model_path    = args.model,
-        )
+        for path in (args.model, args.spectrum):
+            if not Path(path).exists():
+                print(f"[ERROR] File not found: {path}", file=sys.stderr)
+                sys.exit(1)
+        predict(spectrum_path=args.spectrum, model_path=args.model)
 
 
 if __name__ == "__main__":
